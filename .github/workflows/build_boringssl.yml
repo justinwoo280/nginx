@@ -83,6 +83,10 @@ jobs:
           ls -lh boringssl/.openssl/lib/
           ls -lh boringssl/.openssl/include
 
+      - name: Patch nginx openssl conf for C++ runtime linkage ordering
+        run: |
+          sed -i '/CORE_LIBS=.*libcrypto\.a/a\            CORE_LIBS="$CORE_LIBS -lstdc++"' auto/lib/openssl/conf
+
       - name: Configure nginx
         run: |
           auto/configure \
@@ -131,7 +135,7 @@ jobs:
             --with-pcre-jit \
             --with-openssl=${{ github.workspace }}/boringssl \
             --with-cc-opt="-O2 -fstack-protector-strong -Wformat -Werror=format-security" \
-            --with-ld-opt="-lstdc++ -Wl,-z,relro -Wl,-z,now"
+            --with-ld-opt="-Wl,-z,relro -Wl,-z,now"
           touch ${{ github.workspace }}/boringssl/.openssl/include/openssl/ssl.h
 
       - name: Build nginx
