@@ -1,0 +1,573 @@
+name: Build nginx packages (multi-arch)
+
+on:
+  push:
+    branches:
+      - master
+      - 'stable-*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.ssl }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---- BoringSSL ----
+          - ssl: boringssl
+            arch: amd64
+            runner: ubuntu-24.04
+            is_cross: 'false'
+            deb_arch: amd64
+            rpm_arch: x86_64
+
+          - ssl: boringssl
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            is_cross: 'false'
+            deb_arch: arm64
+            rpm_arch: aarch64
+
+          - ssl: boringssl
+            arch: armhf
+            runner: ubuntu-24.04
+            is_cross: 'true'
+            cross_triple: arm-linux-gnueabihf
+            clang_target: armv7-linux-gnueabihf
+            deb_arch: armhf
+            rpm_arch: armhfp
+
+          # ---- AWS-LC ----
+          - ssl: awslc
+            arch: amd64
+            runner: ubuntu-24.04
+            is_cross: 'false'
+            deb_arch: amd64
+            rpm_arch: x86_64
+
+          - ssl: awslc
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            is_cross: 'false'
+            deb_arch: arm64
+            rpm_arch: aarch64
+
+          - ssl: awslc
+            arch: armhf
+            runner: ubuntu-24.04
+            is_cross: 'true'
+            cross_triple: arm-linux-gnueabihf
+            deb_arch: armhf
+            rpm_arch: armhfp
+
+    steps:
+      - name: Checkout nginx
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------ deps
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          PKGS="build-essential clang lld cmake ninja-build"
+          if [ "${{ matrix.is_cross }}" = "true" ]; then
+            PKGS="$PKGS gcc-${{ matrix.cross_triple }} g++-${{ matrix.cross_triple }} binutils-${{ matrix.cross_triple }}"
+          fi
+          sudo apt-get install -y --no-install-recommends $PKGS
+
+      # ------------------------------------------------------------------ pcre2 + zlib sources
+      # nginx --with-pcre=<src> and --with-zlib=<src> build them from source
+      # using $(CC), so cross-compilation is handled automatically for zlib.
+      # For pcre2 we patch the generated Makefile to add --host (see below).
+      - name: Fetch PCRE2 source
+        run: |
+          curl -fsSL \
+            https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.bz2 \
+            | tar xj
+          mv pcre2-10.44 pcre2-src
+
+      - name: Fetch zlib source
+        run: |
+          curl -fsSL https://zlib.net/zlib-1.3.1.tar.gz | tar xz
+          mv zlib-1.3.1 zlib-src
+
+      # ------------------------------------------------------------------ BoringSSL
+      - name: Resolve BoringSSL HEAD commit
+        if: matrix.ssl == 'boringssl'
+        id: boringssl-rev
+        run: |
+          SHA=$(git ls-remote https://boringssl.googlesource.com/boringssl refs/heads/main | cut -f1)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "BoringSSL HEAD: ${SHA}"
+
+      - name: Cache BoringSSL
+        if: matrix.ssl == 'boringssl'
+        id: cache-boringssl
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/boringssl
+          key: boringssl-pkg-${{ runner.os }}-${{ matrix.arch }}-clang-${{ steps.boringssl-rev.outputs.sha }}
+
+      - name: Fetch BoringSSL
+        if: matrix.ssl == 'boringssl' && steps.cache-boringssl.outputs.cache-hit != 'true'
+        run: |
+          mkdir boringssl && cd boringssl
+          git init
+          git remote add origin https://boringssl.googlesource.com/boringssl
+          git fetch --depth=1 origin ${{ steps.boringssl-rev.outputs.sha }}
+          git checkout FETCH_HEAD
+
+      - name: Build BoringSSL (static, native)
+        if: matrix.ssl == 'boringssl' && matrix.is_cross == 'false' && steps.cache-boringssl.outputs.cache-hit != 'true'
+        run: |
+          cmake -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_FLAGS="-fPIC -D_POSIX_C_SOURCE=200112L" \
+            -DCMAKE_CXX_FLAGS="-fPIC" \
+            -B boringssl/build \
+            boringssl
+          ninja -C boringssl/build ssl crypto
+
+      - name: Build BoringSSL (static, armhf cross)
+        if: matrix.ssl == 'boringssl' && matrix.is_cross == 'true' && steps.cache-boringssl.outputs.cache-hit != 'true'
+        run: |
+          # gcc-arm-linux-gnueabihf installs a sysroot at /usr/arm-linux-gnueabihf
+          # which clang uses for target system headers.
+          cmake -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=arm \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_ASM_COMPILER=clang \
+            -DCMAKE_C_FLAGS="--target=${{ matrix.clang_target }} --sysroot=/usr/${{ matrix.cross_triple }} -fPIC -D_POSIX_C_SOURCE=200112L -marm" \
+            -DCMAKE_CXX_FLAGS="--target=${{ matrix.clang_target }} --sysroot=/usr/${{ matrix.cross_triple }} -fPIC -marm" \
+            -DCMAKE_ASM_FLAGS="--target=${{ matrix.clang_target }} -marm" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld --target=${{ matrix.clang_target }}" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld --target=${{ matrix.clang_target }}" \
+            -B boringssl/build \
+            boringssl
+          ninja -C boringssl/build ssl crypto
+
+      - name: Prepare BoringSSL .openssl structure
+        if: matrix.ssl == 'boringssl'
+        run: |
+          rm -rf boringssl/.openssl
+          mkdir -p boringssl/.openssl/lib
+          cp boringssl/build/libssl.a    boringssl/.openssl/lib/
+          cp boringssl/build/libcrypto.a boringssl/.openssl/lib/
+          ln -sf ${{ github.workspace }}/boringssl/include boringssl/.openssl/include
+
+      # ------------------------------------------------------------------ AWS-LC
+      - name: Resolve AWS-LC HEAD commit
+        if: matrix.ssl == 'awslc'
+        id: awslc-rev
+        run: |
+          SHA=$(git ls-remote https://github.com/aws/aws-lc refs/heads/main | cut -f1)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "AWS-LC HEAD: ${SHA}"
+
+      - name: Cache AWS-LC
+        if: matrix.ssl == 'awslc'
+        id: cache-awslc
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/aws-lc
+          key: awslc-pkg-${{ runner.os }}-${{ matrix.arch }}-${{ steps.awslc-rev.outputs.sha }}
+
+      - name: Fetch AWS-LC
+        if: matrix.ssl == 'awslc' && steps.cache-awslc.outputs.cache-hit != 'true'
+        run: |
+          mkdir aws-lc && cd aws-lc
+          git init
+          git remote add origin https://github.com/aws/aws-lc
+          git fetch --depth=1 origin ${{ steps.awslc-rev.outputs.sha }}
+          git checkout FETCH_HEAD
+
+      - name: Build AWS-LC (static, native)
+        if: matrix.ssl == 'awslc' && matrix.is_cross == 'false' && steps.cache-awslc.outputs.cache-hit != 'true'
+        run: |
+          cmake -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DDISABLE_PERL=ON \
+            -DCMAKE_C_FLAGS="-fPIC" \
+            -DCMAKE_CXX_FLAGS="-fPIC" \
+            -B aws-lc/build \
+            aws-lc
+          ninja -C aws-lc/build ssl crypto
+
+      - name: Build AWS-LC (static, armhf cross)
+        if: matrix.ssl == 'awslc' && matrix.is_cross == 'true' && steps.cache-awslc.outputs.cache-hit != 'true'
+        run: |
+          cmake -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DDISABLE_PERL=ON \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=arm \
+            -DCMAKE_C_COMPILER=${{ matrix.cross_triple }}-gcc \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cross_triple }}-g++ \
+            -DCMAKE_C_FLAGS="-fPIC" \
+            -DCMAKE_CXX_FLAGS="-fPIC" \
+            -B aws-lc/build \
+            aws-lc
+          ninja -C aws-lc/build ssl crypto
+
+      - name: Prepare AWS-LC .openssl structure
+        if: matrix.ssl == 'awslc'
+        run: |
+          LIBSSL=$(find aws-lc/build -name "libssl.a" | head -1)
+          LIBCRYPTO=$(find aws-lc/build -name "libcrypto.a" | head -1)
+          if [ -z "$LIBSSL" ] || [ -z "$LIBCRYPTO" ]; then
+            echo "ERROR: could not find libssl.a or libcrypto.a"
+            find aws-lc/build -name "*.a" | sort
+            exit 1
+          fi
+          rm -rf aws-lc/.openssl
+          mkdir -p aws-lc/.openssl/lib
+          cp "$LIBSSL"    aws-lc/.openssl/lib/
+          cp "$LIBCRYPTO" aws-lc/.openssl/lib/
+          ln -sf ${{ github.workspace }}/aws-lc/include aws-lc/.openssl/include
+
+      # ------------------------------------------------------------------ nginx configure
+      - name: Set SSL directory
+        id: ssl-dir
+        run: |
+          if [ "${{ matrix.ssl }}" = "boringssl" ]; then
+            echo "path=${{ github.workspace }}/boringssl" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=${{ github.workspace }}/aws-lc" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Patch nginx openssl conf for C++ runtime linkage ordering
+        run: |
+          sed -i '/CORE_LIBS=.*libcrypto\.a/a\            CORE_LIBS="$CORE_LIBS -static-libstdc++ -static-libgcc"' \
+            auto/lib/openssl/conf
+
+      - name: Configure nginx (native)
+        if: matrix.is_cross == 'false'
+        run: |
+          auto/configure \
+            --prefix=/etc/nginx \
+            --sbin-path=/usr/sbin/nginx \
+            --modules-path=/usr/lib/nginx/modules \
+            --conf-path=/etc/nginx/nginx.conf \
+            --error-log-path=/var/log/nginx/error.log \
+            --http-log-path=/var/log/nginx/access.log \
+            --pid-path=/var/run/nginx.pid \
+            --lock-path=/var/run/nginx.lock \
+            --http-client-body-temp-path=/var/cache/nginx/client_temp \
+            --http-proxy-temp-path=/var/cache/nginx/proxy_temp \
+            --http-fastcgi-temp-path=/var/cache/nginx/fastcgi_temp \
+            --http-uwsgi-temp-path=/var/cache/nginx/uwsgi_temp \
+            --http-scgi-temp-path=/var/cache/nginx/scgi_temp \
+            --with-threads \
+            --with-file-aio \
+            --with-http_ssl_module \
+            --with-http_v2_module \
+            --with-http_v3_module \
+            --with-http_realip_module \
+            --with-http_addition_module \
+            --with-http_sub_module \
+            --with-http_dav_module \
+            --with-http_flv_module \
+            --with-http_mp4_module \
+            --with-http_gunzip_module \
+            --with-http_gzip_static_module \
+            --with-http_auth_request_module \
+            --with-http_random_index_module \
+            --with-http_secure_link_module \
+            --with-http_slice_module \
+            --with-http_stub_status_module \
+            --with-mail \
+            --with-mail_ssl_module \
+            --with-stream \
+            --with-stream_ssl_module \
+            --with-stream_realip_module \
+            --with-stream_ssl_preread_module \
+            --with-pcre=${{ github.workspace }}/pcre2-src \
+            --with-pcre-jit \
+            --with-zlib=${{ github.workspace }}/zlib-src \
+            --with-openssl=${{ steps.ssl-dir.outputs.path }} \
+            --with-cc-opt="-O2 -fstack-protector-strong" \
+            --with-ld-opt="-Wl,-z,relro -Wl,-z,now"
+          touch ${{ steps.ssl-dir.outputs.path }}/.openssl/include/openssl/ssl.h
+
+      - name: Configure nginx (armhf cross)
+        if: matrix.is_cross == 'true'
+        run: |
+          CC=${{ matrix.cross_triple }}-gcc \
+          AR=${{ matrix.cross_triple }}-ar \
+          auto/configure \
+            --crossbuild=Linux:armv7l \
+            --prefix=/etc/nginx \
+            --sbin-path=/usr/sbin/nginx \
+            --modules-path=/usr/lib/nginx/modules \
+            --conf-path=/etc/nginx/nginx.conf \
+            --error-log-path=/var/log/nginx/error.log \
+            --http-log-path=/var/log/nginx/access.log \
+            --pid-path=/var/run/nginx.pid \
+            --lock-path=/var/run/nginx.lock \
+            --http-client-body-temp-path=/var/cache/nginx/client_temp \
+            --http-proxy-temp-path=/var/cache/nginx/proxy_temp \
+            --http-fastcgi-temp-path=/var/cache/nginx/fastcgi_temp \
+            --http-uwsgi-temp-path=/var/cache/nginx/uwsgi_temp \
+            --http-scgi-temp-path=/var/cache/nginx/scgi_temp \
+            --with-threads \
+            --with-file-aio \
+            --with-http_ssl_module \
+            --with-http_v2_module \
+            --with-http_v3_module \
+            --with-http_realip_module \
+            --with-http_addition_module \
+            --with-http_sub_module \
+            --with-http_dav_module \
+            --with-http_flv_module \
+            --with-http_mp4_module \
+            --with-http_gunzip_module \
+            --with-http_gzip_static_module \
+            --with-http_auth_request_module \
+            --with-http_random_index_module \
+            --with-http_secure_link_module \
+            --with-http_slice_module \
+            --with-http_stub_status_module \
+            --with-mail \
+            --with-mail_ssl_module \
+            --with-stream \
+            --with-stream_ssl_module \
+            --with-stream_realip_module \
+            --with-stream_ssl_preread_module \
+            --with-pcre=${{ github.workspace }}/pcre2-src \
+            --with-pcre-jit \
+            --with-zlib=${{ github.workspace }}/zlib-src \
+            --with-openssl=${{ steps.ssl-dir.outputs.path }} \
+            --with-cc-opt="-O2 -fstack-protector-strong" \
+            --with-ld-opt="-Wl,-z,relro -Wl,-z,now"
+          touch ${{ steps.ssl-dir.outputs.path }}/.openssl/include/openssl/ssl.h
+          # PCRE2 uses autoconf and requires --host for cross-compilation.
+          # nginx's --with-pcre source build does not pass --host automatically,
+          # so patch it into the generated Makefile before building.
+          sed -i "s|./configure --disable-shared|./configure --host=${{ matrix.cross_triple }} --disable-shared|g" \
+            objs/Makefile
+
+      # ------------------------------------------------------------------ build
+      - name: Build nginx
+        run: make -j$(nproc)
+
+      # ------------------------------------------------------------------ verify (native only)
+      - name: Verify - no dynamic ssl/crypto linkage
+        if: matrix.is_cross == 'false'
+        run: |
+          ldd ./objs/nginx | grep -E "libssl|libcrypto" && \
+            { echo "ERROR: dynamic ssl/crypto linkage detected!"; exit 1; } || \
+            echo "OK: ssl/crypto statically linked"
+
+      - name: Verify - QUIC module present
+        if: matrix.is_cross == 'false'
+        run: |
+          ./objs/nginx -V 2>&1 | tee /dev/stderr | grep -i "http_v3_module\|quic" && \
+            echo "OK: HTTP/3 (QUIC) present" || \
+            { echo "ERROR: HTTP/3 module missing"; exit 1; }
+
+      # ------------------------------------------------------------------ package
+      - name: Get nginx version
+        id: nginx-ver
+        run: |
+          VER=$(grep '#define NGINX_VERSION' src/core/nginx.h | awk '{print $3}' | tr -d '"')
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "nginx version: ${VER}"
+
+      - name: Install nfpm
+        run: |
+          case "$(uname -m)" in
+            x86_64)  NFPM_GOARCH=amd64  ;;
+            aarch64) NFPM_GOARCH=arm64  ;;
+            *)       NFPM_GOARCH=amd64  ;;
+          esac
+          NFPM_VER=$(curl -fsSL https://api.github.com/repos/goreleaser/nfpm/releases/latest \
+            | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+          echo "Installing nfpm ${NFPM_VER} for ${NFPM_GOARCH}"
+          curl -fsSL \
+            "https://github.com/goreleaser/nfpm/releases/download/${NFPM_VER}/nfpm_${NFPM_VER#v}_Linux_${NFPM_GOARCH}.tar.gz" \
+            | tar xz nfpm
+          sudo mv nfpm /usr/local/bin/nfpm
+          nfpm --version
+
+      - name: Prepare package staging root
+        run: |
+          if [ "${{ matrix.is_cross }}" = "true" ]; then
+            STRIP_CMD="${{ matrix.cross_triple }}-strip"
+          else
+            STRIP_CMD="strip"
+          fi
+          mkdir -p pkgroot/usr/sbin
+          mkdir -p pkgroot/etc/nginx
+          mkdir -p pkgroot/var/log/nginx
+          mkdir -p pkgroot/var/cache/nginx
+          mkdir -p pkgroot/lib/systemd/system
+          cp objs/nginx pkgroot/usr/sbin/nginx
+          cp conf/mime.types pkgroot/etc/nginx/mime.types
+          ${STRIP_CMD} pkgroot/usr/sbin/nginx || true
+          echo "Binary size after strip:"
+          ls -lh pkgroot/usr/sbin/nginx
+
+      - name: Write nginx.conf template
+        run: |
+          cat > pkgroot/etc/nginx/nginx.conf << 'CONF'
+          user  nobody;
+          worker_processes  auto;
+
+          error_log  /var/log/nginx/error.log notice;
+          pid        /var/run/nginx.pid;
+
+          events {
+              worker_connections  1024;
+          }
+
+          http {
+              include       mime.types;
+              default_type  application/octet-stream;
+              sendfile        on;
+              keepalive_timeout  65;
+
+              server {
+                  listen       80;
+                  server_name  localhost;
+                  location / {
+                      root   html;
+                      index  index.html index.htm;
+                  }
+              }
+          }
+          CONF
+
+      - name: Write systemd service unit
+        run: |
+          cat > pkgroot/lib/systemd/system/nginx.service << 'UNIT'
+          [Unit]
+          Description=nginx - high performance web server (QUIC/HTTP3)
+          Documentation=https://nginx.org/en/docs/
+          After=network-online.target remote-fs.target nss-lookup.target
+          Wants=network-online.target
+
+          [Service]
+          Type=forking
+          PIDFile=/var/run/nginx.pid
+          ExecStartPre=/usr/sbin/nginx -t -q -g 'daemon on; master_process on;'
+          ExecStart=/usr/sbin/nginx -g 'daemon on; master_process on;'
+          ExecReload=/bin/kill -s HUP $MAINPID
+          ExecStop=/bin/kill -s TERM $MAINPID
+          PrivateTmp=true
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+      - name: Write nfpm lifecycle scripts
+        run: |
+          mkdir -p scripts
+          cat > scripts/postinstall.sh << 'EOF'
+          #!/bin/sh
+          if command -v systemctl > /dev/null 2>&1; then
+            systemctl daemon-reload
+            systemctl enable --now nginx || true
+          fi
+          EOF
+          cat > scripts/preremove.sh << 'EOF'
+          #!/bin/sh
+          if command -v systemctl > /dev/null 2>&1; then
+            systemctl stop nginx 2>/dev/null || true
+            systemctl disable nginx 2>/dev/null || true
+          fi
+          EOF
+          cat > scripts/postremove.sh << 'EOF'
+          #!/bin/sh
+          if command -v systemctl > /dev/null 2>&1; then
+            systemctl daemon-reload
+          fi
+          EOF
+          chmod +x scripts/postinstall.sh scripts/preremove.sh scripts/postremove.sh
+
+      - name: Generate nfpm.yaml
+        run: |
+          cat > nfpm.yaml << EOF
+          name: nginx
+          arch: "${{ matrix.deb_arch }}"
+          platform: linux
+          version: "${{ steps.nginx-ver.outputs.version }}"
+          section: httpd
+          priority: optional
+          maintainer: "nginx QUIC CI <nginx@example.com>"
+          description: |
+            nginx ${{ steps.nginx-ver.outputs.version }} built with ${{ matrix.ssl }} (HTTP/3 QUIC enabled).
+            SSL/crypto statically linked. Supports QUIC, HTTP/3, TLS 1.3.
+          vendor: nginx.org
+          homepage: https://nginx.org
+          license: BSD-2-Clause
+
+          depends:
+            - libcrypt1
+
+          contents:
+            - src: pkgroot/usr/sbin/nginx
+              dst: /usr/sbin/nginx
+              file_info:
+                mode: 0755
+            - src: pkgroot/etc/nginx/nginx.conf
+              dst: /etc/nginx/nginx.conf
+              type: config|noreplace
+            - src: pkgroot/etc/nginx/mime.types
+              dst: /etc/nginx/mime.types
+              type: config|noreplace
+            - src: pkgroot/lib/systemd/system/nginx.service
+              dst: /lib/systemd/system/nginx.service
+            - dst: /var/log/nginx
+              type: dir
+              file_info:
+                mode: 0755
+            - dst: /var/cache/nginx
+              type: dir
+              file_info:
+                mode: 0755
+
+          scripts:
+            postinstall: scripts/postinstall.sh
+            preremove: scripts/preremove.sh
+            postremove: scripts/postremove.sh
+          EOF
+
+      - name: Build .deb package
+        run: |
+          nfpm pkg --config nfpm.yaml --packager deb --target .
+          ls -lh *.deb
+
+      - name: Build .rpm package
+        run: |
+          # rpm uses different arch names than deb
+          sed -i 's|^arch: "${{ matrix.deb_arch }}"|arch: "${{ matrix.rpm_arch }}"|' nfpm.yaml
+          nfpm pkg --config nfpm.yaml --packager rpm --target .
+          ls -lh *.rpm
+
+      # ------------------------------------------------------------------ upload
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nginx-${{ matrix.ssl }}-${{ matrix.arch }}-${{ steps.nginx-ver.outputs.version }}
+          path: |
+            *.deb
+            *.rpm
+          retention-days: 30

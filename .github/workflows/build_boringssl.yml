@@ -85,7 +85,7 @@ jobs:
 
       - name: Patch nginx openssl conf for C++ runtime linkage ordering
         run: |
-          sed -i '/CORE_LIBS=.*libcrypto\.a/a\            CORE_LIBS="$CORE_LIBS -lstdc++"' auto/lib/openssl/conf
+          sed -i '/CORE_LIBS=.*libcrypto\.a/a\            CORE_LIBS="$CORE_LIBS -static-libstdc++ -static-libgcc"' auto/lib/openssl/conf
 
       - name: Configure nginx
         run: |
