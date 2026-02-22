@@ -65,18 +65,28 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_TESTING=OFF \
             -DDISABLE_PERL=ON \
-            -DCMAKE_C_FLAGS="-fPIC -D_POSIX_C_SOURCE=200112L" \
+            -DCMAKE_C_FLAGS="-fPIC" \
             -DCMAKE_CXX_FLAGS="-fPIC" \
             -B aws-lc/build \
             aws-lc
           ninja -C aws-lc/build ssl crypto
 
-      - name: Verify static libraries exist
+      - name: Locate static libraries and export paths
         run: |
-          ls -lh aws-lc/build/ssl/libssl.a
-          ls -lh aws-lc/build/crypto/libcrypto.a
-          file aws-lc/build/ssl/libssl.a
-          file aws-lc/build/crypto/libcrypto.a
+          LIBSSL=$(find aws-lc/build -name "libssl.a" | head -1)
+          LIBCRYPTO=$(find aws-lc/build -name "libcrypto.a" | head -1)
+          if [ -z "$LIBSSL" ] || [ -z "$LIBCRYPTO" ]; then
+            echo "ERROR: could not find libssl.a or libcrypto.a under aws-lc/build"
+            find aws-lc/build -name "*.a" | sort
+            exit 1
+          fi
+          LIBSSL_DIR=$(dirname "$LIBSSL")
+          LIBCRYPTO_DIR=$(dirname "$LIBCRYPTO")
+          echo "Found libssl.a:   $LIBSSL"
+          echo "Found libcrypto.a: $LIBCRYPTO"
+          file "$LIBSSL" "$LIBCRYPTO"
+          echo "AWSLC_LIBSSL_DIR=$LIBSSL_DIR"       >> "$GITHUB_ENV"
+          echo "AWSLC_LIBCRYPTO_DIR=$LIBCRYPTO_DIR" >> "$GITHUB_ENV"
 
       - name: Configure nginx
         run: |
@@ -125,7 +135,7 @@ jobs:
             --with-stream_ssl_preread_module \
             --with-pcre-jit \
             --with-cc-opt="-I ${{ github.workspace }}/aws-lc/include -O2 -fstack-protector-strong -Wformat -Werror=format-security" \
-            --with-ld-opt="-L ${{ github.workspace }}/aws-lc/build/ssl -L ${{ github.workspace }}/aws-lc/build/crypto -Wl,-z,relro -Wl,-z,now"
+            --with-ld-opt="-L ${{ env.AWSLC_LIBSSL_DIR }} -L ${{ env.AWSLC_LIBCRYPTO_DIR }} -Wl,-z,relro -Wl,-z,now"
 
       - name: Build nginx
         run: make -j$(nproc)

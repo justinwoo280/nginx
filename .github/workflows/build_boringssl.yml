@@ -75,8 +75,8 @@ jobs:
 
       - name: Verify static libraries exist
         run: |
-          ls -lh boringssl/build/ssl/libssl.a
-          ls -lh boringssl/build/crypto/libcrypto.a
+          ls -lh boringssl/build/libssl.a
+          ls -lh boringssl/build/libcrypto.a
 
       - name: Configure nginx
         run: |
@@ -125,7 +125,7 @@ jobs:
             --with-stream_ssl_preread_module \
             --with-pcre-jit \
             --with-cc-opt="-I ${{ github.workspace }}/boringssl/include -O2 -fstack-protector-strong -Wformat -Werror=format-security" \
-            --with-ld-opt="-L ${{ github.workspace }}/boringssl/build/ssl -L ${{ github.workspace }}/boringssl/build/crypto -Wl,-z,relro -Wl,-z,now"
+            --with-ld-opt="-L ${{ github.workspace }}/boringssl/build -Wl,-z,relro -Wl,-z,now"
 
       - name: Build nginx
         run: make -j$(nproc)
