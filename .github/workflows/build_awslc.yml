@@ -1,4 +1,4 @@
-name: Build nginx with BoringSSL
+name: Build nginx with AWS-LC
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
 
 jobs:
   build:
-    name: nginx + BoringSSL (full)
+    name: nginx + AWS-LC (full)
     runs-on: ubuntu-24.04
 
     steps:
@@ -23,7 +23,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential \
-            clang \
             cmake \
             ninja-build \
             golang-go \
@@ -35,48 +34,49 @@ jobs:
             libgeoip-dev \
             libperl-dev
 
-      - name: Resolve BoringSSL HEAD commit
-        id: boringssl-rev
+      - name: Resolve AWS-LC HEAD commit
+        id: awslc-rev
         run: |
-          SHA=$(git ls-remote https://boringssl.googlesource.com/boringssl refs/heads/main | cut -f1)
+          SHA=$(git ls-remote https://github.com/aws/aws-lc refs/heads/main | cut -f1)
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
-          echo "BoringSSL HEAD: ${SHA}"
+          echo "AWS-LC HEAD: ${SHA}"
 
-      - name: Cache BoringSSL
-        id: cache-boringssl
+      - name: Cache AWS-LC
+        id: cache-awslc
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/boringssl
-          key: boringssl-${{ runner.os }}-clang-${{ steps.boringssl-rev.outputs.sha }}
+          path: ${{ github.workspace }}/aws-lc
+          key: awslc-${{ runner.os }}-${{ steps.awslc-rev.outputs.sha }}
 
-      - name: Fetch BoringSSL
-        if: steps.cache-boringssl.outputs.cache-hit != 'true'
+      - name: Fetch AWS-LC
+        if: steps.cache-awslc.outputs.cache-hit != 'true'
         run: |
-          mkdir boringssl && cd boringssl
+          mkdir aws-lc && cd aws-lc
           git init
-          git remote add origin https://boringssl.googlesource.com/boringssl
-          git fetch --depth=1 origin ${{ steps.boringssl-rev.outputs.sha }}
+          git remote add origin https://github.com/aws/aws-lc
+          git fetch --depth=1 origin ${{ steps.awslc-rev.outputs.sha }}
           git checkout FETCH_HEAD
 
-      - name: Build BoringSSL (static only)
-        if: steps.cache-boringssl.outputs.cache-hit != 'true'
+      - name: Build AWS-LC (static only)
+        if: steps.cache-awslc.outputs.cache-hit != 'true'
         run: |
           cmake -GNinja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_TESTING=OFF \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
+            -DDISABLE_PERL=ON \
             -DCMAKE_C_FLAGS="-fPIC -D_POSIX_C_SOURCE=200112L" \
             -DCMAKE_CXX_FLAGS="-fPIC" \
-            -B boringssl/build \
-            boringssl
-          ninja -C boringssl/build ssl crypto
+            -B aws-lc/build \
+            aws-lc
+          ninja -C aws-lc/build ssl crypto
 
       - name: Verify static libraries exist
         run: |
-          ls -lh boringssl/build/ssl/libssl.a
-          ls -lh boringssl/build/crypto/libcrypto.a
+          ls -lh aws-lc/build/ssl/libssl.a
+          ls -lh aws-lc/build/crypto/libcrypto.a
+          file aws-lc/build/ssl/libssl.a
+          file aws-lc/build/crypto/libcrypto.a
 
       - name: Configure nginx
         run: |
@@ -124,8 +124,8 @@ jobs:
             --with-stream_geoip_module \
             --with-stream_ssl_preread_module \
             --with-pcre-jit \
-            --with-cc-opt="-I ${{ github.workspace }}/boringssl/include -O2 -fstack-protector-strong -Wformat -Werror=format-security" \
-            --with-ld-opt="-L ${{ github.workspace }}/boringssl/build/ssl -L ${{ github.workspace }}/boringssl/build/crypto -Wl,-z,relro -Wl,-z,now"
+            --with-cc-opt="-I ${{ github.workspace }}/aws-lc/include -O2 -fstack-protector-strong -Wformat -Werror=format-security" \
+            --with-ld-opt="-L ${{ github.workspace }}/aws-lc/build/ssl -L ${{ github.workspace }}/aws-lc/build/crypto -Wl,-z,relro -Wl,-z,now"
 
       - name: Build nginx
         run: make -j$(nproc)
@@ -144,6 +144,11 @@ jobs:
         run: |
           echo "=== nginx -V ==="
           ./objs/nginx -V 2>&1
+          echo ""
+          echo "=== Checking SSL backend is AWS-LC ==="
+          ./objs/nginx -V 2>&1 | grep -i "aws-lc\|AWS-LC" && \
+            echo "OK: AWS-LC confirmed" || \
+            { echo "WARNING: AWS-LC string not found in version output"; ./objs/nginx -V 2>&1; }
 
       - name: Verify binary - QUIC support compiled in
         run: |
@@ -154,6 +159,6 @@ jobs:
       - name: Upload nginx binary
         uses: actions/upload-artifact@v4
         with:
-          name: nginx-boringssl-${{ github.sha }}
+          name: nginx-awslc-${{ github.sha }}
           path: objs/nginx
           retention-days: 14
