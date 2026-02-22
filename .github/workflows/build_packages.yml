@@ -77,6 +77,9 @@ jobs:
           PKGS="build-essential clang lld cmake ninja-build"
           if [ "${{ matrix.is_cross }}" = "true" ]; then
             PKGS="$PKGS gcc-${{ matrix.cross_triple }} g++-${{ matrix.cross_triple }} binutils-${{ matrix.cross_triple }}"
+            # qemu-user-static registers ARM binfmt handlers so nginx's
+            # auto/configure can execute the ARM test binaries on x86_64.
+            PKGS="$PKGS qemu-user-static binfmt-support"
           fi
           sudo apt-get install -y --no-install-recommends $PKGS
 
@@ -140,22 +143,25 @@ jobs:
       - name: Build BoringSSL (static, armhf cross)
         if: matrix.ssl == 'boringssl' && matrix.is_cross == 'true' && steps.cache-boringssl.outputs.cache-hit != 'true'
         run: |
-          # gcc-arm-linux-gnueabihf installs a sysroot at /usr/arm-linux-gnueabihf
-          # which clang uses for target system headers.
+          # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY avoids the link test:
+          # clang+lld with --sysroot double-prepends paths from libc.so linker
+          # scripts (which already embed absolute /usr/arm-linux-gnueabihf/lib/
+          # paths), causing a "cannot find libc.so.6 inside sysroot" error.
+          # For a static-only library build we never need to link libc anyway.
+          # Headers are found via clang's built-in GCC cross-toolchain search.
           cmake -GNinja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_TESTING=OFF \
             -DCMAKE_SYSTEM_NAME=Linux \
             -DCMAKE_SYSTEM_PROCESSOR=arm \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_ASM_COMPILER=clang \
-            -DCMAKE_C_FLAGS="--target=${{ matrix.clang_target }} --sysroot=/usr/${{ matrix.cross_triple }} -fPIC -D_POSIX_C_SOURCE=200112L -marm" \
-            -DCMAKE_CXX_FLAGS="--target=${{ matrix.clang_target }} --sysroot=/usr/${{ matrix.cross_triple }} -fPIC -marm" \
+            -DCMAKE_C_FLAGS="--target=${{ matrix.clang_target }} -I/usr/${{ matrix.cross_triple }}/include -fPIC -D_POSIX_C_SOURCE=200112L -marm" \
+            -DCMAKE_CXX_FLAGS="--target=${{ matrix.clang_target }} -I/usr/${{ matrix.cross_triple }}/include -fPIC -marm" \
             -DCMAKE_ASM_FLAGS="--target=${{ matrix.clang_target }} -marm" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld --target=${{ matrix.clang_target }}" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld --target=${{ matrix.clang_target }}" \
             -B boringssl/build \
             boringssl
           ninja -C boringssl/build ssl crypto
@@ -394,9 +400,9 @@ jobs:
       - name: Install nfpm
         run: |
           case "$(uname -m)" in
-            x86_64)  NFPM_GOARCH=amd64  ;;
+            x86_64)  NFPM_GOARCH=x86_64 ;;
             aarch64) NFPM_GOARCH=arm64  ;;
-            *)       NFPM_GOARCH=amd64  ;;
+            *)       NFPM_GOARCH=x86_64 ;;
           esac
           NFPM_VER=$(curl -fsSL https://api.github.com/repos/goreleaser/nfpm/releases/latest \
             | grep '"tag_name"' | head -1 | cut -d'"' -f4)
