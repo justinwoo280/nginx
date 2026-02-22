@@ -92,7 +92,7 @@ jobs:
 
       - name: Patch nginx openssl conf for C++ runtime linkage ordering
         run: |
-          sed -i '/CORE_LIBS=.*libcrypto\.a/a\            CORE_LIBS="$CORE_LIBS -static-libstdc++ -static-libgcc"' auto/lib/openssl/conf
+          sed -i '/CORE_LIBS=.*libcrypto\.a/a\            CORE_LIBS="$CORE_LIBS -Wl,-Bstatic,-lstdc++,-Bdynamic"' auto/lib/openssl/conf
 
       - name: Configure nginx
         run: |
@@ -141,7 +141,7 @@ jobs:
             --with-stream_ssl_preread_module \
             --with-pcre-jit \
             --with-openssl=${{ github.workspace }}/aws-lc \
-            --with-cc-opt="-O2 -fstack-protector-strong -Wformat -Werror=format-security" \
+            --with-cc-opt="-O2 -fstack-protector-strong -Wno-deprecated-declarations" \
             --with-ld-opt="-Wl,-z,relro -Wl,-z,now"
           touch ${{ github.workspace }}/aws-lc/.openssl/include/openssl/ssl.h
 

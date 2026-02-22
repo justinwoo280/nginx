@@ -93,7 +93,7 @@ jobs:
 
       - name: Fetch zlib source
         run: |
-          curl -fsSL https://zlib.net/zlib-1.3.1.tar.gz | tar xz
+          curl -fsSL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz | tar xz
           mv zlib-1.3.1 zlib-src
 
       # ------------------------------------------------------------------ BoringSSL
@@ -255,7 +255,7 @@ jobs:
 
       - name: Patch nginx openssl conf for C++ runtime linkage ordering
         run: |
-          sed -i '/CORE_LIBS=.*libcrypto\.a/a\            CORE_LIBS="$CORE_LIBS -static-libstdc++ -static-libgcc"' \
+          sed -i '/CORE_LIBS=.*libcrypto\.a/a\            CORE_LIBS="$CORE_LIBS -Wl,-Bstatic,-lstdc++,-Bdynamic"' \
             auto/lib/openssl/conf
 
       - name: Configure nginx (native)
@@ -303,7 +303,7 @@ jobs:
             --with-pcre-jit \
             --with-zlib=${{ github.workspace }}/zlib-src \
             --with-openssl=${{ steps.ssl-dir.outputs.path }} \
-            --with-cc-opt="-O2 -fstack-protector-strong" \
+            --with-cc-opt="-O2 -fstack-protector-strong -Wno-deprecated-declarations" \
             --with-ld-opt="-Wl,-z,relro -Wl,-z,now"
           touch ${{ steps.ssl-dir.outputs.path }}/.openssl/include/openssl/ssl.h
 
@@ -355,7 +355,7 @@ jobs:
             --with-pcre-jit \
             --with-zlib=${{ github.workspace }}/zlib-src \
             --with-openssl=${{ steps.ssl-dir.outputs.path }} \
-            --with-cc-opt="-O2 -fstack-protector-strong" \
+            --with-cc-opt="-O2 -fstack-protector-strong -Wno-deprecated-declarations" \
             --with-ld-opt="-Wl,-z,relro -Wl,-z,now"
           touch ${{ steps.ssl-dir.outputs.path }}/.openssl/include/openssl/ssl.h
           # PCRE2 uses autoconf and requires --host for cross-compilation.
