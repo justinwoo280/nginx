@@ -71,7 +71,7 @@ jobs:
             aws-lc
           ninja -C aws-lc/build ssl crypto
 
-      - name: Locate static libraries and export paths
+      - name: Prepare AWS-LC .openssl structure for nginx
         run: |
           LIBSSL=$(find aws-lc/build -name "libssl.a" | head -1)
           LIBCRYPTO=$(find aws-lc/build -name "libcrypto.a" | head -1)
@@ -80,13 +80,15 @@ jobs:
             find aws-lc/build -name "*.a" | sort
             exit 1
           fi
-          LIBSSL_DIR=$(dirname "$LIBSSL")
-          LIBCRYPTO_DIR=$(dirname "$LIBCRYPTO")
-          echo "Found libssl.a:   $LIBSSL"
-          echo "Found libcrypto.a: $LIBCRYPTO"
-          file "$LIBSSL" "$LIBCRYPTO"
-          echo "AWSLC_LIBSSL_DIR=$LIBSSL_DIR"       >> "$GITHUB_ENV"
-          echo "AWSLC_LIBCRYPTO_DIR=$LIBCRYPTO_DIR" >> "$GITHUB_ENV"
+          echo "Found: $LIBSSL"
+          echo "Found: $LIBCRYPTO"
+          rm -rf aws-lc/.openssl
+          mkdir -p aws-lc/.openssl/lib
+          cp "$LIBSSL"   aws-lc/.openssl/lib/
+          cp "$LIBCRYPTO" aws-lc/.openssl/lib/
+          ln -sf ${{ github.workspace }}/aws-lc/include aws-lc/.openssl/include
+          ls -lh aws-lc/.openssl/lib/
+          ls -lh aws-lc/.openssl/include
 
       - name: Configure nginx
         run: |
@@ -134,8 +136,10 @@ jobs:
             --with-stream_geoip_module \
             --with-stream_ssl_preread_module \
             --with-pcre-jit \
-            --with-cc-opt="-I ${{ github.workspace }}/aws-lc/include -O2 -fstack-protector-strong -Wformat -Werror=format-security" \
-            --with-ld-opt="-L ${{ env.AWSLC_LIBSSL_DIR }} -L ${{ env.AWSLC_LIBCRYPTO_DIR }} -lstdc++ -Wl,-z,relro -Wl,-z,now"
+            --with-openssl=${{ github.workspace }}/aws-lc \
+            --with-cc-opt="-O2 -fstack-protector-strong -Wformat -Werror=format-security" \
+            --with-ld-opt="-lstdc++ -Wl,-z,relro -Wl,-z,now"
+          touch ${{ github.workspace }}/aws-lc/.openssl/include/openssl/ssl.h
 
       - name: Build nginx
         run: make -j$(nproc)
