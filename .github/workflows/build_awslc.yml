@@ -135,7 +135,7 @@ jobs:
             --with-stream_ssl_preread_module \
             --with-pcre-jit \
             --with-cc-opt="-I ${{ github.workspace }}/aws-lc/include -O2 -fstack-protector-strong -Wformat -Werror=format-security" \
-            --with-ld-opt="-L ${{ env.AWSLC_LIBSSL_DIR }} -L ${{ env.AWSLC_LIBCRYPTO_DIR }} -Wl,-z,relro -Wl,-z,now"
+            --with-ld-opt="-L ${{ env.AWSLC_LIBSSL_DIR }} -L ${{ env.AWSLC_LIBCRYPTO_DIR }} -lstdc++ -Wl,-z,relro -Wl,-z,now"
 
       - name: Build nginx
         run: make -j$(nproc)
