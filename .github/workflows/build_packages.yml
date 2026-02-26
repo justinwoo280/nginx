@@ -24,26 +24,26 @@ jobs:
           # ---- BoringSSL ----
           - ssl: boringssl
             arch: amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             deb_arch: amd64
             rpm_arch: x86_64
 
           - ssl: boringssl
             arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             deb_arch: arm64
             rpm_arch: aarch64
 
           # ---- AWS-LC ----
           - ssl: awslc
             arch: amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             deb_arch: amd64
             rpm_arch: x86_64
 
           - ssl: awslc
             arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             deb_arch: arm64
             rpm_arch: aarch64
 
