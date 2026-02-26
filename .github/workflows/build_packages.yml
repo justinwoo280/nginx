@@ -236,6 +236,8 @@ jobs:
             --with-pcre-jit \
             --with-zlib=${{ github.workspace }}/zlib-src \
             --with-openssl=${{ steps.ssl-dir.outputs.path }} \
+            --user=www-data \
+            --group=www-data \
             --with-cc-opt="-O2 -fstack-protector-strong -Wno-deprecated-declarations" \
             --with-ld-opt="-Wl,-z,relro -Wl,-z,now"
           touch ${{ steps.ssl-dir.outputs.path }}/.openssl/include/openssl/ssl.h
@@ -297,7 +299,7 @@ jobs:
       - name: Write nginx.conf template
         run: |
           cat > pkgroot/etc/nginx/nginx.conf << 'CONF'
-          user  nobody;
+          user  www-data;
           worker_processes  auto;
 
           error_log  /var/log/nginx/error.log notice;
