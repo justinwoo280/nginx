@@ -1,4 +1,4 @@
-name: Build nginx packages (multi-arch)
+name: Build nginx packages (BoringSSL / AWS-LC)
 
 on:
   push:
@@ -23,48 +23,27 @@ jobs:
           - ssl: boringssl
             arch: amd64
             runner: ubuntu-24.04
-            is_cross: 'false'
             deb_arch: amd64
             rpm_arch: x86_64
 
           - ssl: boringssl
             arch: arm64
             runner: ubuntu-24.04-arm
-            is_cross: 'false'
             deb_arch: arm64
             rpm_arch: aarch64
-
-          - ssl: boringssl
-            arch: armhf
-            runner: ubuntu-24.04
-            is_cross: 'true'
-            cross_triple: arm-linux-gnueabihf
-            clang_target: armv7-linux-gnueabihf
-            deb_arch: armhf
-            rpm_arch: armhfp
 
           # ---- AWS-LC ----
           - ssl: awslc
             arch: amd64
             runner: ubuntu-24.04
-            is_cross: 'false'
             deb_arch: amd64
             rpm_arch: x86_64
 
           - ssl: awslc
             arch: arm64
             runner: ubuntu-24.04-arm
-            is_cross: 'false'
             deb_arch: arm64
             rpm_arch: aarch64
-
-          - ssl: awslc
-            arch: armhf
-            runner: ubuntu-24.04
-            is_cross: 'true'
-            cross_triple: arm-linux-gnueabihf
-            deb_arch: armhf
-            rpm_arch: armhfp
 
     steps:
       - name: Checkout nginx
@@ -74,32 +53,10 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          PKGS="build-essential clang lld cmake ninja-build"
-          if [ "${{ matrix.is_cross }}" = "true" ]; then
-            PKGS="$PKGS gcc-${{ matrix.cross_triple }} g++-${{ matrix.cross_triple }} binutils-${{ matrix.cross_triple }}"
-            # qemu-user-static registers ARM binfmt handlers so nginx's
-            # auto/configure can execute the ARM test binaries on x86_64.
-            PKGS="$PKGS qemu-user-static binfmt-support"
-          fi
-          sudo apt-get install -y --no-install-recommends $PKGS
-
-          if [ "${{ matrix.is_cross }}" = "true" ]; then
-            # binfmt_misc may not be mounted in the GitHub Actions VM; without
-            # it qemu-user-static's postinst cannot register the ARM handler.
-            if ! mountpoint -q /proc/sys/fs/binfmt_misc 2>/dev/null; then
-              sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || true
-            fi
-            # Re-run registration explicitly in case postinst ran before mount.
-            sudo update-binfmts --enable qemu-arm || true
-            cat /proc/sys/fs/binfmt_misc/qemu-arm 2>/dev/null \
-              && echo "QEMU-arm binfmt: OK" \
-              || echo "QEMU-arm binfmt: NOT registered (will rely on cc/conf patch)"
-          fi
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang lld cmake ninja-build
 
       # ------------------------------------------------------------------ pcre2 + zlib sources
-      # nginx --with-pcre=<src> and --with-zlib=<src> build them from source
-      # using $(CC), so cross-compilation is handled automatically for zlib.
-      # For pcre2 we patch the generated Makefile to add --host (see below).
       - name: Fetch PCRE2 source
         run: |
           curl -fsSL \
@@ -138,8 +95,8 @@ jobs:
           git fetch --depth=1 origin ${{ steps.boringssl-rev.outputs.sha }}
           git checkout FETCH_HEAD
 
-      - name: Build BoringSSL (static, native)
-        if: matrix.ssl == 'boringssl' && matrix.is_cross == 'false' && steps.cache-boringssl.outputs.cache-hit != 'true'
+      - name: Build BoringSSL (static)
+        if: matrix.ssl == 'boringssl' && steps.cache-boringssl.outputs.cache-hit != 'true'
         run: |
           cmake -GNinja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -149,32 +106,6 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_FLAGS="-fPIC -D_POSIX_C_SOURCE=200112L" \
             -DCMAKE_CXX_FLAGS="-fPIC" \
-            -B boringssl/build \
-            boringssl
-          ninja -C boringssl/build ssl crypto
-
-      - name: Build BoringSSL (static, armhf cross)
-        if: matrix.ssl == 'boringssl' && matrix.is_cross == 'true' && steps.cache-boringssl.outputs.cache-hit != 'true'
-        run: |
-          # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY avoids the link test:
-          # clang+lld with --sysroot double-prepends paths from libc.so linker
-          # scripts (which already embed absolute /usr/arm-linux-gnueabihf/lib/
-          # paths), causing a "cannot find libc.so.6 inside sysroot" error.
-          # For a static-only library build we never need to link libc anyway.
-          # Headers are found via clang's built-in GCC cross-toolchain search.
-          cmake -GNinja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DBUILD_TESTING=OFF \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=arm \
-            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_ASM_COMPILER=clang \
-            -DCMAKE_C_FLAGS="--target=${{ matrix.clang_target }} -I/usr/${{ matrix.cross_triple }}/include -fPIC -D_POSIX_C_SOURCE=200112L -marm" \
-            -DCMAKE_CXX_FLAGS="--target=${{ matrix.clang_target }} -I/usr/${{ matrix.cross_triple }}/include -fPIC -marm" \
-            -DCMAKE_ASM_FLAGS="--target=${{ matrix.clang_target }} -marm" \
             -B boringssl/build \
             boringssl
           ninja -C boringssl/build ssl crypto
@@ -214,32 +145,14 @@ jobs:
           git fetch --depth=1 origin ${{ steps.awslc-rev.outputs.sha }}
           git checkout FETCH_HEAD
 
-      - name: Build AWS-LC (static, native)
-        if: matrix.ssl == 'awslc' && matrix.is_cross == 'false' && steps.cache-awslc.outputs.cache-hit != 'true'
+      - name: Build AWS-LC (static)
+        if: matrix.ssl == 'awslc' && steps.cache-awslc.outputs.cache-hit != 'true'
         run: |
           cmake -GNinja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_TESTING=OFF \
             -DDISABLE_PERL=ON \
-            -DCMAKE_C_FLAGS="-fPIC" \
-            -DCMAKE_CXX_FLAGS="-fPIC" \
-            -B aws-lc/build \
-            aws-lc
-          ninja -C aws-lc/build ssl crypto
-
-      - name: Build AWS-LC (static, armhf cross)
-        if: matrix.ssl == 'awslc' && matrix.is_cross == 'true' && steps.cache-awslc.outputs.cache-hit != 'true'
-        run: |
-          cmake -GNinja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DBUILD_TESTING=OFF \
-            -DDISABLE_PERL=ON \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=arm \
-            -DCMAKE_C_COMPILER=${{ matrix.cross_triple }}-gcc \
-            -DCMAKE_CXX_COMPILER=${{ matrix.cross_triple }}-g++ \
             -DCMAKE_C_FLAGS="-fPIC" \
             -DCMAKE_CXX_FLAGS="-fPIC" \
             -B aws-lc/build \
@@ -277,8 +190,7 @@ jobs:
           sed -i '/CORE_LIBS=.*libcrypto\.a/a\            CORE_LIBS="$CORE_LIBS -Wl,-Bstatic,-lstdc++,-Bdynamic"' \
             auto/lib/openssl/conf
 
-      - name: Configure nginx (native)
-        if: matrix.is_cross == 'false'
+      - name: Configure nginx
         run: |
           auto/configure \
             --prefix=/etc/nginx \
@@ -325,84 +237,19 @@ jobs:
             --with-cc-opt="-O2 -fstack-protector-strong -Wno-deprecated-declarations" \
             --with-ld-opt="-Wl,-z,relro -Wl,-z,now"
           touch ${{ steps.ssl-dir.outputs.path }}/.openssl/include/openssl/ssl.h
-
-      - name: Configure nginx (armhf cross)
-        if: matrix.is_cross == 'true'
-        run: |
-          # nginx auto/cc/conf uses ngx_feature_run=yes for the initial CC test,
-          # which tries to execute the compiled ARM binary on the x86_64 host.
-          # Change only the first occurrence to compile-only so configure does not
-          # abort if QEMU binfmt is unavailable.  Other run=yes tests (atomic ops,
-          # byteswap) will succeed under QEMU or fall back to nginx's own stubs.
-          sed -i '0,/ngx_feature_run=yes/{s/ngx_feature_run=yes/ngx_feature_run=no/}' auto/cc/name
-          CC=${{ matrix.cross_triple }}-gcc \
-          AR=${{ matrix.cross_triple }}-ar \
-          auto/configure \
-            --crossbuild=Linux:armv7l \
-            --prefix=/etc/nginx \
-            --sbin-path=/usr/sbin/nginx \
-            --modules-path=/usr/lib/nginx/modules \
-            --conf-path=/etc/nginx/nginx.conf \
-            --error-log-path=/var/log/nginx/error.log \
-            --http-log-path=/var/log/nginx/access.log \
-            --pid-path=/var/run/nginx.pid \
-            --lock-path=/var/run/nginx.lock \
-            --http-client-body-temp-path=/var/cache/nginx/client_temp \
-            --http-proxy-temp-path=/var/cache/nginx/proxy_temp \
-            --http-fastcgi-temp-path=/var/cache/nginx/fastcgi_temp \
-            --http-uwsgi-temp-path=/var/cache/nginx/uwsgi_temp \
-            --http-scgi-temp-path=/var/cache/nginx/scgi_temp \
-            --with-threads \
-            --with-file-aio \
-            --with-http_ssl_module \
-            --with-http_v2_module \
-            --with-http_v3_module \
-            --with-http_realip_module \
-            --with-http_addition_module \
-            --with-http_sub_module \
-            --with-http_dav_module \
-            --with-http_flv_module \
-            --with-http_mp4_module \
-            --with-http_gunzip_module \
-            --with-http_gzip_static_module \
-            --with-http_auth_request_module \
-            --with-http_random_index_module \
-            --with-http_secure_link_module \
-            --with-http_slice_module \
-            --with-http_stub_status_module \
-            --with-mail \
-            --with-mail_ssl_module \
-            --with-stream \
-            --with-stream_ssl_module \
-            --with-stream_realip_module \
-            --with-stream_ssl_preread_module \
-            --with-pcre=${{ github.workspace }}/pcre2-src \
-            --with-pcre-jit \
-            --with-zlib=${{ github.workspace }}/zlib-src \
-            --with-openssl=${{ steps.ssl-dir.outputs.path }} \
-            --with-cc-opt="-O2 -fstack-protector-strong -Wno-deprecated-declarations" \
-            --with-ld-opt="-Wl,-z,relro -Wl,-z,now"
-          touch ${{ steps.ssl-dir.outputs.path }}/.openssl/include/openssl/ssl.h
-          # PCRE2 uses autoconf and requires --host for cross-compilation.
-          # nginx's --with-pcre source build does not pass --host automatically,
-          # so patch it into the generated Makefile before building.
-          sed -i "s|./configure --disable-shared|./configure --host=${{ matrix.cross_triple }} --disable-shared|g" \
-            objs/Makefile
 
       # ------------------------------------------------------------------ build
       - name: Build nginx
         run: make -j$(nproc)
 
-      # ------------------------------------------------------------------ verify (native only)
+      # ------------------------------------------------------------------ verify
       - name: Verify - no dynamic ssl/crypto linkage
-        if: matrix.is_cross == 'false'
         run: |
           ldd ./objs/nginx | grep -E "libssl|libcrypto" && \
             { echo "ERROR: dynamic ssl/crypto linkage detected!"; exit 1; } || \
             echo "OK: ssl/crypto statically linked"
 
       - name: Verify - QUIC module present
-        if: matrix.is_cross == 'false'
         run: |
           ./objs/nginx -V 2>&1 | tee /dev/stderr | grep -i "http_v3_module\|quic" && \
             echo "OK: HTTP/3 (QUIC) present" || \
@@ -428,17 +275,12 @@ jobs:
           echo "Installing nfpm ${NFPM_VER} for ${NFPM_GOARCH}"
           curl -fsSL \
             "https://github.com/goreleaser/nfpm/releases/download/${NFPM_VER}/nfpm_${NFPM_VER#v}_Linux_${NFPM_GOARCH}.tar.gz" \
-            | tar xz nfpm
+            | tar xzf - nfpm
           sudo mv nfpm /usr/local/bin/nfpm
           nfpm --version
 
       - name: Prepare package staging root
         run: |
-          if [ "${{ matrix.is_cross }}" = "true" ]; then
-            STRIP_CMD="${{ matrix.cross_triple }}-strip"
-          else
-            STRIP_CMD="strip"
-          fi
           mkdir -p pkgroot/usr/sbin
           mkdir -p pkgroot/etc/nginx
           mkdir -p pkgroot/var/log/nginx
@@ -446,7 +288,7 @@ jobs:
           mkdir -p pkgroot/lib/systemd/system
           cp objs/nginx pkgroot/usr/sbin/nginx
           cp conf/mime.types pkgroot/etc/nginx/mime.types
-          ${STRIP_CMD} pkgroot/usr/sbin/nginx || true
+          strip pkgroot/usr/sbin/nginx || true
           echo "Binary size after strip:"
           ls -lh pkgroot/usr/sbin/nginx
 
@@ -582,7 +424,6 @@ jobs:
 
       - name: Build .rpm package
         run: |
-          # rpm uses different arch names than deb
           sed -i 's|^arch: "${{ matrix.deb_arch }}"|arch: "${{ matrix.rpm_arch }}"|' nfpm.yaml
           nfpm pkg --config nfpm.yaml --packager rpm --target .
           ls -lh *.rpm
