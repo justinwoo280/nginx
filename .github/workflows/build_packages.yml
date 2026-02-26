@@ -83,6 +83,19 @@ jobs:
           fi
           sudo apt-get install -y --no-install-recommends $PKGS
 
+          if [ "${{ matrix.is_cross }}" = "true" ]; then
+            # binfmt_misc may not be mounted in the GitHub Actions VM; without
+            # it qemu-user-static's postinst cannot register the ARM handler.
+            if ! mountpoint -q /proc/sys/fs/binfmt_misc 2>/dev/null; then
+              sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || true
+            fi
+            # Re-run registration explicitly in case postinst ran before mount.
+            sudo update-binfmts --enable qemu-arm || true
+            cat /proc/sys/fs/binfmt_misc/qemu-arm 2>/dev/null \
+              && echo "QEMU-arm binfmt: OK" \
+              || echo "QEMU-arm binfmt: NOT registered (will rely on cc/conf patch)"
+          fi
+
       # ------------------------------------------------------------------ pcre2 + zlib sources
       # nginx --with-pcre=<src> and --with-zlib=<src> build them from source
       # using $(CC), so cross-compilation is handled automatically for zlib.
@@ -316,6 +329,12 @@ jobs:
       - name: Configure nginx (armhf cross)
         if: matrix.is_cross == 'true'
         run: |
+          # nginx auto/cc/conf uses ngx_feature_run=yes for the initial CC test,
+          # which tries to execute the compiled ARM binary on the x86_64 host.
+          # Change only the first occurrence to compile-only so configure does not
+          # abort if QEMU binfmt is unavailable.  Other run=yes tests (atomic ops,
+          # byteswap) will succeed under QEMU or fall back to nginx's own stubs.
+          sed -i '0,/ngx_feature_run=yes/{s/ngx_feature_run=yes/ngx_feature_run=no/}' auto/cc/name
           CC=${{ matrix.cross_triple }}-gcc \
           AR=${{ matrix.cross_triple }}-ar \
           auto/configure \
