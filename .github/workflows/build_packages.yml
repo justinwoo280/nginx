@@ -86,7 +86,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/boringssl
-          key: boringssl-pkg-${{ runner.os }}-${{ matrix.arch }}-clang-${{ steps.boringssl-rev.outputs.sha }}
+          key: boringssl-pkg-${{ matrix.runner }}-${{ matrix.arch }}-clang-${{ steps.boringssl-rev.outputs.sha }}
 
       - name: Fetch BoringSSL
         if: matrix.ssl == 'boringssl' && steps.cache-boringssl.outputs.cache-hit != 'true'
@@ -136,7 +136,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/aws-lc
-          key: awslc-pkg-${{ runner.os }}-${{ matrix.arch }}-${{ steps.awslc-rev.outputs.sha }}
+          key: awslc-pkg-${{ matrix.runner }}-${{ matrix.arch }}-${{ steps.awslc-rev.outputs.sha }}
 
       - name: Fetch AWS-LC
         if: matrix.ssl == 'awslc' && steps.cache-awslc.outputs.cache-hit != 'true'
